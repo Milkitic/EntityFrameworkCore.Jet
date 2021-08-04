@@ -664,26 +664,26 @@ namespace EntityFrameworkCore.Jet.Data
             var unusedParameters = InnerCommand.Parameters
                 .Cast<DbParameter>()
                 .ToList();
-
-            foreach (var placeholder in placeholders)
+            var dict = placeholders.ToDictionary(k => k.Name.TrimStart('@'), k => k);
+            foreach (var placeholder in dict)
             {
                 var parameter = unusedParameters
-                    .FirstOrDefault(p => placeholder.Name.Equals(p.ParameterName, StringComparison.Ordinal));
+                    .FirstOrDefault(p => placeholder.Key.Equals(p.ParameterName, StringComparison.Ordinal));
 
                 if (parameter != null)
                 {
-                    placeholder.Parameter = parameter;
+                    placeholder.Value.Parameter = parameter;
                     unusedParameters.Remove(parameter);
                 }
                 else
                 {
                     parameter = placeholders
-                        .FirstOrDefault(p => placeholder.Name.Equals(p.Name, StringComparison.Ordinal))
+                        .FirstOrDefault(p => placeholder.Key.Equals(p.Name, StringComparison.Ordinal))
                         ?.Parameter;
 
                     if (parameter == null)
                     {
-                        throw new InvalidOperationException($"Cannot find parameter with same name as parameter placeholder \"{placeholder.Name}\".");
+                        throw new InvalidOperationException($"Cannot find parameter with same name as parameter placeholder \"{placeholder.Key}\".");
                     }
 
                     var newParameter = (DbParameter) (parameter as ICloneable)?.Clone();
@@ -693,7 +693,7 @@ namespace EntityFrameworkCore.Jet.Data
                         throw new InvalidOperationException($"Cannot clone parameter \"{parameter.ParameterName}\".");
                     }
 
-                    placeholder.Parameter = newParameter;
+                    placeholder.Value.Parameter = newParameter;
                 }
             }
         }
