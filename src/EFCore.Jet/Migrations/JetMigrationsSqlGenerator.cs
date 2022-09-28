@@ -58,13 +58,22 @@ namespace Microsoft.EntityFrameworkCore.Migrations
             _keepBreakingCharactersStringTypeMapping = ((JetStringTypeMapping) _stringTypeMapping).Clone(keepLineBreakCharacters: true);
         }
 
-        // ReSharper disable once OptionalParameterHierarchyMismatch
-        public override IReadOnlyList<MigrationCommand> Generate(IReadOnlyList<MigrationOperation> operations, IModel model)
+        /// <summary>
+        ///     Generates commands from a list of operations.
+        /// </summary>
+        /// <param name="operations"> The operations. </param>
+        /// <param name="model"> The target model which may be <see langword="null" /> if the operations exist without a model. </param>
+        /// <param name="options"> The options to use when generating commands. </param>
+        /// <returns> The list of commands to be executed or scripted. </returns>
+        public override IReadOnlyList<MigrationCommand> Generate(
+            IReadOnlyList<MigrationOperation> operations,
+            IModel model = null,
+            MigrationsSqlGenerationOptions options = MigrationsSqlGenerationOptions.Default)
         {
             _operations = operations;
             try
             {
-                return base.Generate(operations, model);
+                return base.Generate(operations, model, options);
             }
             finally
             {
@@ -123,7 +132,7 @@ namespace Microsoft.EntityFrameworkCore.Migrations
             if (IsIdentity(operation))
             {
                 // NB: This gets added to all added non-nullable columns by MigrationsModelDiffer. We need to suppress
-                //     it, here because SQL Server can't have both IDENTITY and a DEFAULT constraint on the same column.
+                //     it, here because Jet can't have both IDENTITY and a DEFAULT constraint on the same column.
                 operation.DefaultValue = null;
             }
 
@@ -152,8 +161,9 @@ namespace Microsoft.EntityFrameworkCore.Migrations
             Check.NotNull(operation, nameof(operation));
             Check.NotNull(builder, nameof(builder));
 
-            IEnumerable<IIndex> indexesToRebuild = null;
-            var property = FindProperty(model, operation.Schema, operation.Table, operation.Name);
+            IEnumerable<ITableIndex> indexesToRebuild = null;
+            var column = model?.GetRelationalModel().FindTable(operation.Table, operation.Schema)
+                ?.Columns.FirstOrDefault(c => c.Name == operation.Name);
 
             if (operation.ComputedColumnSql != null)
             {
@@ -163,9 +173,9 @@ namespace Microsoft.EntityFrameworkCore.Migrations
                     Table = operation.Table,
                     Name = operation.Name
                 };
-                if (property != null)
+                if (column != null)
                 {
-                    dropColumnOperation.AddAnnotations(_migrationsAnnotations.ForRemove(property));
+                    dropColumnOperation.AddAnnotations(column.GetAnnotations());
                 }
 
                 var addColumnOperation = new AddColumnOperation
@@ -187,8 +197,7 @@ namespace Microsoft.EntityFrameworkCore.Migrations
                 addColumnOperation.AddAnnotations(operation.GetAnnotations());
 
                 // TODO: Use a column rebuild instead
-                indexesToRebuild = GetIndexesToRebuild(property, operation)
-                    .ToList();
+                indexesToRebuild = GetIndexesToRebuild(column, operation).ToList();
                 DropIndexes(indexesToRebuild, builder);
                 Generate(dropColumnOperation, model, builder, terminate: false);
                 builder.AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator);
@@ -227,7 +236,7 @@ namespace Microsoft.EntityFrameworkCore.Migrations
 
             if (narrowed)
             {
-                indexesToRebuild = GetIndexesToRebuild(property, operation)
+                indexesToRebuild = GetIndexesToRebuild(column, operation)
                     .ToList();
                 DropIndexes(indexesToRebuild, builder);
             }
@@ -696,6 +705,35 @@ namespace Microsoft.EntityFrameworkCore.Migrations
                 }
             }
         }
+        
+        protected override void ColumnDefinition(
+            string schema,
+            string table,
+            string name,
+            ColumnOperation operation,
+            IModel model,
+            MigrationCommandListBuilder builder)
+        {
+            Check.NotEmpty(name, nameof(name));
+            Check.NotNull(operation, nameof(operation));
+            Check.NotNull(builder, nameof(builder));
+            
+            if (operation.ComputedColumnSql != null)
+            {
+                ComputedColumnDefinition(schema, table, name, operation, model, builder);
+                return;
+            }
+
+            var columnType = GetColumnType(schema, table, name, operation, model);
+            builder
+                .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(name))
+                .Append(" ")
+                .Append(columnType);
+
+            builder.Append(operation.IsNullable ? " NULL" : " NOT NULL");
+
+            DefaultValue(operation.DefaultValue, operation.DefaultValueSql, columnType, builder);
+        }
 
         protected override string GetColumnType(
             [CanBeNull] string schema,
@@ -704,26 +742,30 @@ namespace Microsoft.EntityFrameworkCore.Migrations
             [NotNull] ColumnOperation operation,
             [CanBeNull] IModel model)
         {
-            var storeType = base.GetColumnType(schema, table, name, operation, model);
-
-            var identity = operation[JetAnnotationNames.Identity] as string;
-            if (identity != null
-                || operation[JetAnnotationNames.ValueGenerationStrategy] as JetValueGenerationStrategy?
-                == JetValueGenerationStrategy.IdentityColumn)
+            var storeType = operation.ColumnType;
+            
+            if (IsIdentity(operation) &&
+                (storeType == null || Dependencies.TypeMappingSource.FindMapping(storeType) is JetIntTypeMapping))
             {
-                if (string.Equals(storeType, "counter", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(storeType, "identity", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(storeType, "autoincrement", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(storeType, "integer", StringComparison.OrdinalIgnoreCase))
-                {
-                    storeType = "counter";
+                // This column represents the actual identity.
+                storeType = "counter";
+            }
+            else if (storeType != null &&
+                     IsExplicitIdentityColumnType(storeType))
+            {
+                // While this column uses an identity type (e.g. counter), it is not an actual identity column, because
+                // it was not marked as one.
+                storeType = "integer";
+            }
 
-                    if (!string.IsNullOrEmpty(identity)
-                        && identity != "1, 1")
-                    {
-                        storeType += $"({identity})";
-                    }
-                }
+            storeType ??= base.GetColumnType(schema, table, name, operation, model);
+            
+            if (string.Equals(storeType, "counter", StringComparison.OrdinalIgnoreCase) &&
+                operation[JetAnnotationNames.Identity] is string identity &&
+                !string.IsNullOrEmpty(identity) &&
+                identity != "1, 1")
+            {
+                storeType += $"({identity})";
             }
 
             return storeType;
@@ -783,7 +825,7 @@ namespace Microsoft.EntityFrameworkCore.Migrations
 
                 builder
                     .Append(" DEFAULT ")
-                    .Append(defaultValue);
+                    .Append((string)defaultValue);
             }
         }
 
@@ -861,47 +903,43 @@ namespace Microsoft.EntityFrameworkCore.Migrations
         }
 
         /// <summary>
-        ///     Gets the list of indexes that need to be rebuilt when the given property is changing.
+        ///     Gets the list of indexes that need to be rebuilt when the given column is changing.
         /// </summary>
-        /// <param name="property"> The property. </param>
+        /// <param name="column"> The column. </param>
         /// <param name="currentOperation"> The operation which may require a rebuild. </param>
         /// <returns> The list of indexes affected. </returns>
-        protected virtual IEnumerable<IIndex> GetIndexesToRebuild(
-            [CanBeNull] IProperty property,
+        protected virtual IEnumerable<ITableIndex> GetIndexesToRebuild(
+            [CanBeNull] IColumn column,
             [NotNull] MigrationOperation currentOperation)
         {
             Check.NotNull(currentOperation, nameof(currentOperation));
 
-            if (property == null)
+            if (column == null)
             {
                 yield break;
             }
 
+            var table = column.Table;
             var createIndexOperations = _operations.SkipWhile(o => o != currentOperation)
                 .Skip(1)
                 .OfType<CreateIndexOperation>()
                 .ToList();
-            foreach (var index in property.DeclaringEntityType.GetIndexes()
-                .Concat(
-                    property.DeclaringEntityType.GetDerivedTypes()
-                        .SelectMany(et => et.GetDeclaredIndexes())))
+            foreach (var index in table.Indexes)
             {
-                var indexName = index.GetName();
+                var indexName = index.Name;
                 if (createIndexOperations.Any(o => o.Name == indexName))
                 {
                     continue;
                 }
 
-                if (index.Properties.Any(p => p == property))
+                if (index.Columns.Any(c => c == column))
                 {
                     yield return index;
                 }
-                else if (index.GetIncludeProperties() is IReadOnlyList<string> includeProperties)
+                else if (index[JetAnnotationNames.Include] is IReadOnlyList<string> includeColumns
+                         && includeColumns.Contains(column.Name))
                 {
-                    if (includeProperties.Contains(property.Name))
-                    {
-                        yield return index;
-                    }
+                    yield return index;
                 }
             }
         }
@@ -912,7 +950,7 @@ namespace Microsoft.EntityFrameworkCore.Migrations
         /// <param name="indexes"> The indexes to drop. </param>
         /// <param name="builder"> The command builder to use to build the commands. </param>
         protected virtual void DropIndexes(
-            [NotNull] IEnumerable<IIndex> indexes,
+            [NotNull] IEnumerable<ITableIndex> indexes,
             [NotNull] MigrationCommandListBuilder builder)
         {
             Check.NotNull(indexes, nameof(indexes));
@@ -920,15 +958,16 @@ namespace Microsoft.EntityFrameworkCore.Migrations
 
             foreach (var index in indexes)
             {
+                var table = index.Table;
                 var operation = new DropIndexOperation
                 {
-                    Schema = index.DeclaringEntityType.GetSchema(),
-                    Table = index.DeclaringEntityType.GetTableName(),
-                    Name = index.GetName()
+                    Schema = table.Schema,
+                    Table = table.Name,
+                    Name = index.Name
                 };
-                operation.AddAnnotations(_migrationsAnnotations.ForRemove(index));
+                operation.AddAnnotations(index.GetAnnotations());
 
-                Generate(operation, index.DeclaringEntityType.Model, builder, terminate: false);
+                Generate(operation, table.Model.Model, builder, terminate: false);
                 builder.AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator);
             }
         }
@@ -939,7 +978,7 @@ namespace Microsoft.EntityFrameworkCore.Migrations
         /// <param name="indexes"> The indexes to create. </param>
         /// <param name="builder"> The command builder to use to build the commands. </param>
         protected virtual void CreateIndexes(
-            [NotNull] IEnumerable<IIndex> indexes,
+            [NotNull] IEnumerable<ITableIndex> indexes,
             [NotNull] MigrationCommandListBuilder builder)
         {
             Check.NotNull(indexes, nameof(indexes));
@@ -947,19 +986,7 @@ namespace Microsoft.EntityFrameworkCore.Migrations
 
             foreach (var index in indexes)
             {
-                var operation = new CreateIndexOperation
-                {
-                    IsUnique = index.IsUnique,
-                    Name = index.GetName(),
-                    Schema = index.DeclaringEntityType.GetSchema(),
-                    Table = index.DeclaringEntityType.GetTableName(),
-                    Columns = index.Properties.Select(p => p.GetColumnName())
-                        .ToArray(),
-                    Filter = index.GetFilter()
-                };
-                operation.AddAnnotations(_migrationsAnnotations.For(index));
-
-                Generate(operation, index.DeclaringEntityType.Model, builder, terminate: false);
+                Generate(CreateIndexOperation.CreateFrom(index), index.Table.Model.Model, builder, terminate: false);
                 builder.AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator);
             }
         }
@@ -968,6 +995,11 @@ namespace Microsoft.EntityFrameworkCore.Migrations
             => operation[JetAnnotationNames.Identity] != null
                || operation[JetAnnotationNames.ValueGenerationStrategy] as JetValueGenerationStrategy?
                == JetValueGenerationStrategy.IdentityColumn;
+
+        private static bool IsExplicitIdentityColumnType(string columnType)
+            => string.Equals("counter", columnType, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals("identity", columnType, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals("autoincrement", columnType, StringComparison.OrdinalIgnoreCase);
 
         #region Schemas not supported
 

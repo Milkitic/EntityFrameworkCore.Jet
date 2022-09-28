@@ -26,6 +26,11 @@ namespace Microsoft.EntityFrameworkCore.Diagnostics
             // Model validation events
             DecimalTypeDefaultWarning = CoreEventId.ProviderBaseId,
             ByteIdentityColumnWarning,
+            ConflictingValueGenerationStrategiesWarning,
+            DecimalTypeKeyWarning,
+
+            // Transaction events
+            SavepointsDisabledBecauseOfMARS,
 
             // Scaffolding events
             ColumnFound = CoreEventId.ProviderDesignBaseId,
@@ -57,11 +62,27 @@ namespace Microsoft.EntityFrameworkCore.Diagnostics
             IndexFound,
             ForeignKeyFound,
             ForeignKeyPrincipalColumnMissingWarning,
-            ReflexiveConstraintIgnored
+            ReflexiveConstraintIgnored,
+            IndexSkipped,
         }
 
         private static readonly string _validationPrefix = DbLoggerCategory.Model.Validation.Name + ".";
-        private static EventId MakeValidationId(Id id) => new EventId((int)id, _validationPrefix + id);
+
+        private static EventId MakeValidationId(Id id)
+            => new EventId((int)id, _validationPrefix + id);
+
+        /// <summary>
+        ///     <para>
+        ///         Decimal column is part of the key.
+        ///     </para>
+        ///     <para>
+        ///         This event is in the <see cref="DbLoggerCategory.Model.Validation" /> category.
+        ///     </para>
+        ///     <para>
+        ///         This event uses the <see cref="PropertyEventData" /> payload when used with a <see cref="DiagnosticSource" />.
+        ///     </para>
+        /// </summary>
+        public static readonly EventId DecimalTypeKeyWarning = MakeValidationId(Id.DecimalTypeKeyWarning);
 
         /// <summary>
         ///     <para>
@@ -89,8 +110,41 @@ namespace Microsoft.EntityFrameworkCore.Diagnostics
         /// </summary>
         public static readonly EventId ByteIdentityColumnWarning = MakeValidationId(Id.ByteIdentityColumnWarning);
 
+        /// <summary>
+        ///     <para>
+        ///         There are conflicting value generation methods for a property.
+        ///     </para>
+        ///     <para>
+        ///         This event is in the <see cref="DbLoggerCategory.Model.Validation" /> category.
+        ///     </para>
+        ///     <para>
+        ///         This event uses the <see cref="ConflictingValueGenerationStrategiesEventData" />
+        ///         payload when used with a <see cref="DiagnosticSource" />.
+        ///     </para>
+        /// </summary>
+        public static readonly EventId ConflictingValueGenerationStrategiesWarning =
+            MakeValidationId(Id.ConflictingValueGenerationStrategiesWarning);
+
+        private static readonly string _transactionPrefix = DbLoggerCategory.Database.Transaction.Name + ".";
+
+        private static EventId MakeTransactionId(Id id)
+            => new EventId((int)id, _transactionPrefix + id);
+
+        /// <summary>
+        ///     <para>
+        ///         Savepoints have been disabled when saving changes with an external transaction, because Multiple Active Result Sets is
+        ///         enabled.
+        ///     </para>
+        ///     <para>
+        ///         This event is in the <see cref="DbLoggerCategory.Database.Transaction" /> category.
+        ///     </para>
+        /// </summary>
+        public static readonly EventId SavepointsDisabledBecauseOfMARS = MakeTransactionId(Id.SavepointsDisabledBecauseOfMARS);
+
         private static readonly string _scaffoldingPrefix = DbLoggerCategory.Scaffolding.Name + ".";
-        private static EventId MakeScaffoldingId(Id id) => new EventId((int)id, _scaffoldingPrefix + id);
+
+        private static EventId MakeScaffoldingId(Id id)
+            => new EventId((int)id, _scaffoldingPrefix + id);
 
         /// <summary>
         ///     A column was found.
@@ -158,6 +212,12 @@ namespace Microsoft.EntityFrameworkCore.Diagnostics
         ///     This event is in the <see cref="DbLoggerCategory.Scaffolding" /> category.
         /// </summary>
         public static readonly EventId IndexFound = MakeScaffoldingId(Id.IndexFound);
+
+        /// <summary>
+        ///     An index was skipped.
+        ///     This event is in the <see cref="DbLoggerCategory.Scaffolding" /> category.
+        /// </summary>
+        public static readonly EventId IndexSkipped = MakeScaffoldingId(Id.IndexSkipped);
 
         /// <summary>
         ///     A foreign key was found.

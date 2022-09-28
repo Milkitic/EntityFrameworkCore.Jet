@@ -168,8 +168,8 @@ namespace EntityFrameworkCore.Jet.Scaffolding.Internal
             if (tables.Count > 0)
             {
                 GetColumns(connection, tables);
-                GetIndexes(connection, tables);
                 GetRelations(connection, tables);
+                GetIndexes(connection, tables);
             }
 
             return tables;
@@ -203,6 +203,7 @@ namespace EntityFrameworkCore.Jet.Scaffolding.Internal
                     var computedValue = (string) null; // TODO: Implement support for expressions
                                                        // (DAO Field2 (though not mentioned)).
                                                        // Might have no equivalent in ADOX.
+                    var computedIsPersisted = false;
 
                     _logger.ColumnFound(
                         tableName,
@@ -215,7 +216,8 @@ namespace EntityFrameworkCore.Jet.Scaffolding.Internal
                         nullable,
                         identitySeed.HasValue,
                         defaultValue,
-                        computedValue);
+                        computedValue,
+                        computedIsPersisted);
                     
                     var storeType = GetStoreType(dataTypeName, precision, scale, maxLength);
                     defaultValue = FilterClrDefaults(dataTypeName, nullable, defaultValue);
@@ -370,35 +372,52 @@ namespace EntityFrameworkCore.Jet.Scaffolding.Internal
                             table.PrimaryKey = primaryKey;
                             indexOrKey = primaryKey;
                         }
-                        else if (indexType == "UNIQUE" &&
-                                 !nullable)
-                        {
-                            var uniqueConstraint = new DatabaseUniqueConstraint
-                            {
-                                Table = table,
-                                Name = indexName,
-                            };
-
-                            _logger.UniqueConstraintFound(indexName, tableName);
-
-                            table.UniqueConstraints.Add(uniqueConstraint);
-                            indexOrKey = uniqueConstraint;
-                        }
                         else
                         {
-                            var index = new DatabaseIndex
+                            var isUnique = indexType == "UNIQUE";
+
+                            if (isUnique &&
+                                !nullable)
                             {
-                                Table = table,
-                                Name = indexName,
-                                IsUnique = indexType == "UNIQUE",
-                            };
+                                var uniqueConstraint = new DatabaseUniqueConstraint
+                                {
+                                    Table = table,
+                                    Name = indexName,
+                                };
 
-                            _logger.IndexFound(indexName, tableName, index.IsUnique);
+                                _logger.UniqueConstraintFound(indexName, tableName);
 
-                            table.Indexes.Add(index);
-                            indexOrKey = index;
+                                table.UniqueConstraints.Add(uniqueConstraint);
+                                indexOrKey = uniqueConstraint;
+                            }
+                            else
+                            {
+                                // In contrast to SQL Standard, MS Access will implicitly create an index for every FK
+                                // constraint.
+                                // According to https://docs.microsoft.com/en-us/office/client-developer/access/desktop-database-reference/constraint-clause-microsoft-access-sql,
+                                // this behavior can be disabled, but manuall creating an index with the same name as an
+                                // FK would still results in a runtime error.
+                                // We therefore skip indexes with the same name as existing FKs. 
+                                if (table.ForeignKeys.Any(fk => fk.Name == indexName))
+                                {
+                                    _logger.IndexSkipped(indexName, tableName, isUnique);
+                                    continue;
+                                }
+                            
+                                var index = new DatabaseIndex
+                                {
+                                    Table = table,
+                                    Name = indexName,
+                                    IsUnique = isUnique,
+                                };
+
+                                _logger.IndexFound(indexName, tableName, index.IsUnique);
+
+                                table.Indexes.Add(index);
+                                indexOrKey = index;
+                            }
                         }
-                        
+
                         foreach (var indexColumn in indexColumns)
                         {
                             var columnName = indexColumn.GetValueOrDefault<string>("COLUMN_NAME");

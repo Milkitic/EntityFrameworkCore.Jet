@@ -16,6 +16,7 @@ using EntityFrameworkCore.Jet.Internal;
 using EntityFrameworkCore.Jet.Metadata.Internal;
 using EntityFrameworkCore.Jet.Scaffolding.Internal;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics.Internal;
 using Microsoft.EntityFrameworkCore.Scaffolding;
 using Microsoft.EntityFrameworkCore.TestUtilities;
 using Microsoft.Extensions.Logging;
@@ -1474,7 +1475,46 @@ CREATE TABLE DependentTable (
 DROP TABLE DependentTable;
 DROP TABLE PrincipalTable;");
         }
+        
+        /// <summary>
+        /// In contrast to SQL Standard, MS Access will implicitly create an index for every FK constraint.
+        /// According to https://docs.microsoft.com/en-us/office/client-developer/access/desktop-database-reference/constraint-clause-microsoft-access-sql,
+        /// this behavior can be disabled, but manuall creating an index with the same name as an FK would still results
+        /// in a runtime error.
+        /// We therefore skip indexes with the same name as existing FKs. 
+        /// </summary>
+        [ConditionalFact]
+        public void EnsureNoForeignKeyIndexCreationOperationsAreCreated()
+        {
+            Test(
+                @"
+CREATE TABLE PrincipalTable (
+    Id int PRIMARY KEY
+);
 
+CREATE TABLE DependentTable (
+    Id int PRIMARY KEY,
+    IndexColumn int,
+    ForeignKeyId int,
+    CONSTRAINT MYFK FOREIGN KEY (ForeignKeyId) REFERENCES PrincipalTable(Id) ON DELETE CASCADE
+);
+    CREATE INDEX `IX_DependentTable_IndexColumn` ON `DependentTable` (`IndexColumn`);
+",
+                Enumerable.Empty<string>(),
+                Enumerable.Empty<string>(),
+                dbModel =>
+                {
+                    var table = dbModel.Tables.Single(t => t.Name == "DependentTable");
+                    
+                    Assert.Equal(1, table.ForeignKeys.Count);
+                    Assert.Equal(1, table.Indexes.Count);
+                    Assert.False(table.Indexes.Any(i => i.Name == "MYFK"));
+                },
+                @"
+DROP TABLE DependentTable;
+DROP TABLE PrincipalTable;");
+        }
+        
         [ConditionalFact]
         public void Set_referential_action_for_foreign_key()
         {
@@ -1666,7 +1706,8 @@ DROP TABLE PrincipalTable;");
                         Fixture.ListLoggerFactory,
                         new LoggingOptions(),
                         new DiagnosticListener("Fake"),
-                        new JetLoggingDefinitions()));
+                        new JetLoggingDefinitions(),
+                        new NullDbContextLogger()));
 
                 var databaseModel = databaseModelFactory.Create(
                     Fixture.TestStore.ConnectionString,

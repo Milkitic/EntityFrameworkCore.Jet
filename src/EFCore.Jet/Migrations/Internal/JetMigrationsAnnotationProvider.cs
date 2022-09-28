@@ -1,14 +1,7 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
-using System.Collections.Generic;
-using System.Globalization;
-using System.Linq;
-using EntityFrameworkCore.Jet.Metadata;
-using EntityFrameworkCore.Jet.Metadata.Internal;
 using JetBrains.Annotations;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -36,46 +29,6 @@ namespace EntityFrameworkCore.Jet.Migrations.Internal
         public JetMigrationsAnnotationProvider([NotNull] MigrationsAnnotationProviderDependencies dependencies)
             : base(dependencies)
         {
-        }
-
-        /// <summary>
-        ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
-        ///     the same compatibility standards as public APIs. It may be changed or removed without notice in
-        ///     any release. You should only use it directly in your code with extreme caution and knowing that
-        ///     doing so can result in application failures when updating to a new Entity Framework Core release.
-        /// </summary>
-        public override IEnumerable<IAnnotation> For(IIndex index)
-        {
-            var includeProperties = index.GetIncludeProperties();
-            if (includeProperties != null)
-            {
-                var includeColumns = (IReadOnlyList<string>)includeProperties
-                    .Select(p => index.DeclaringEntityType.FindProperty(p).GetColumnName())
-                    .ToArray();
-
-                yield return new Annotation(
-                    JetAnnotationNames.Include,
-                    includeColumns);
-            }
-        }
-
-        /// <summary>
-        ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
-        ///     the same compatibility standards as public APIs. It may be changed or removed without notice in
-        ///     any release. You should only use it directly in your code with extreme caution and knowing that
-        ///     doing so can result in application failures when updating to a new Entity Framework Core release.
-        /// </summary>
-        public override IEnumerable<IAnnotation> For(IProperty property)
-        {
-            if (property.GetValueGenerationStrategy() == JetValueGenerationStrategy.IdentityColumn)
-            {
-                var seed = property.GetIdentitySeed();
-                var increment = property.GetIdentityIncrement();
-
-                yield return new Annotation(
-                    JetAnnotationNames.Identity,
-                    string.Format(CultureInfo.InvariantCulture, "{0}, {1}", seed ?? 1, increment ?? 1));
-            }
         }
     }
 }
